@@ -4,36 +4,34 @@
 BASE_FOLDER="EBI_cloud_testing"
 DATA_FOLDER="data"
 
+# Add pts and freebayes/bin to local path
+PATH="$PATH:$HOME/$BASE_FOLDER/phoronix-test-suite"
+PATH="$PATH:$HOME/$BASE_FOLDER/freebayes/bin"
+
 #Define format string for the time command output
 #UserModeTime:KernelModeTime:ElapsedRealTimeSec:CPUPercentage:NumSwappedOut:
 #ContextSwitchedInvoluntarily
 TIME_FORMAT_STRING="%U;%S;%e;%P;%W;%c"
 
 function install_dependencies() {
+  printf "Install common dependencies.\n" | tee -a $LOG >&3
   #Update yum cache
   sudo yum makecache fast
-
-  #Phoronix
-  sudo yum -y install git php php-xml xdg-utils bc
-
-  #Freebayes (needs to be compiled)
-  sudo yum -y group install "Development Tools"
-  sudo yum -y install zlib-devel cmake
-
   #Time and wget packages
   sudo yum -y install time wget
 }
 
 function install_phoronix() {
+  #Phoronix dependencies
+  printf "Install Phoronix dependencies.\n" | tee -a $LOG >&3
+  sudo yum -y install git php php-xml xdg-utils bc
+
   printf "PHORONIX: Cloning Phoronix git repo...\n" | tee -a $LOG >&3
   # get the latest stable version of phoronix test suite
   git clone https://github.com/phoronix-test-suite/phoronix-test-suite.git
   cd phoronix-test-suite || exit
   git checkout tags/v5.8.1
   cd ..
-
-  # Add pts to local path
-  PATH="$PATH:$HOME/$BASE_FOLDER/phoronix-test-suite"
 
   printf "PHORONIX: Preparing Phoronix for batch tests...\n" | tee -a $LOG >&3
   # Accept terms of pts (Y)
@@ -65,20 +63,22 @@ function run_phoronix() {
 }
 
 function install_freebayes() {
+  #Freebayes dependencies (needs to be compiled)
+  printf "Install and compile Freebayes dependencies.\n" | tee -a $LOG >&3
+  sudo yum -y group install "Development Tools"
+  sudo yum -y install zlib-devel cmake
+
   printf "FREEBAYES: Cloning Freebayes repo and compiling it\n" | tee -a $LOG >&3
   # Clone freebayes repo
   git clone --recursive git://github.com/ekg/freebayes.git
   cd freebayes || exit
   git checkout tags/v0.9.21
-  git submodule update --recursive 
+  git submodule update --recursive
   cd ..
 
   # Compile it
   cd freebayes || exit
   make
-
-  # Add freebayes/bin to $PATH
-  PATH="$PATH:$HOME/$BASE_FOLDER/freebayes/bin"
 
   # Move to $DATA_FOLDER
   cd ../$DATA_FOLDER || exit
@@ -103,12 +103,14 @@ function run_freebayes() {
 }
 
 function install_gridftp() {
+    printf "Install GridFTP dependencies.\n" | tee -a $LOG >&3
     # Add Globus GridFTP repos
     sudo rpm -U  --replacepkgs http://toolkit.globus.org/ftppub/gt6/installers/repo/globus-toolkit-repo-latest.noarch.rpm
 
     # Install GridFTP
     sudo yum -y install globus-gridftp
 
+    mkdir -p ~/.ssh
     cat <<EOF > ~/.ssh/config
 
     Host $SERVER
@@ -172,7 +174,13 @@ Hostname of the remote EBI server to use for network testing - REQUIRED
 --port=<port>
 Network port of the remote EBI server to use for network testing - REQUIRED
 --call-home
-Enables call-home: test results will be sent back to EMBL-EBI. 
+Enables call-home: test results will be sent back to EMBL-EBI.
+--freebayes
+Execute only the Freebayes tests
+--gridftp
+Execute only the GridFTP tests
+--phoronix
+Execute only the Phoronix tests
 '
 
 printf '
@@ -201,6 +209,12 @@ while [ "$1" != "" ]; do
         --keypair=* )    KEYPAIR=${1#*=};
                  ;;
         --call-home)     CALL_HOME=true;
+                 ;;
+        --freebayes)     FREEBAYES=true;
+                 ;;
+        --gridftp)       GRIDFTP=true;
+                 ;;
+        --phoronix)      PHORONIX=true;
                  ;;
         * )         printf -e "${usage}"
                     exit 1
@@ -290,24 +304,41 @@ exec 1>>$LOG 2>&1
 
 # From now on, normal stdout output should be appended with ">&3". We use tee
 # to redirect both to stdout and the general log file
-printf "\n\n---\nSTEP 1 - Installation\n---\n\n\n" | tee -a $LOG >&3
+printf "\n\n---\nSTEP 1 - General dependencies installation\n---\n\n\n" | tee -a $LOG >&3
 cd $BASE_FOLDER || exit
 printf "Installing dependencies\n" | tee -a $LOG >&3
 install_dependencies
-printf "Installing GridFTP-Lite\n" | tee -a $LOG >&3
-install_gridftp
-printf "\nInstalling Phoronix Test Suite\n" | tee -a $LOG >&3
-install_phoronix
-printf "\nInstalling Freebayes and getting benchmarking data\n" | tee -a $LOG >&3
-install_freebayes
 
 printf "\n\n---\nSTEP 2 - Run tests\n---\n" | tee -a $LOG >&3
-run_phoronix
-run_freebayes
-run_gridftp
+# Set true the execution of all the test, unless one or more are explicitly
+# specified in the command line option
+if ([ "$FREEBAYES" != true ] && [ "$GRIDFTP" != true ] && [ "$PHORONIX" != true ]) ; then
+  FREEBAYES=true
+  GRIDFTP=true
+  PHORONIX=true
+fi
+if [ "$GRIDFTP" == true ]; then
+  printf "Installing GridFTP-Lite\n" | tee -a $LOG >&3
+  install_gridftp
+  printf "Executing GridFTP-Lite\n" | tee -a $LOG >&3
+  run_gridftp
+fi
+if [ "$PHORONIX" == true ]; then
+  printf "\nInstalling Phoronix Test Suite\n" | tee -a $LOG >&3
+  install_phoronix
+  printf "Executing Phoronix Test Suite\n" | tee -a $LOG >&3
+  run_phoronix
+fi
+if [ "$FREEBAYES" == true ]; then
+  printf "\nInstalling Freebayes and getting benchmarking data\n" | tee -a $LOG >&3
+  install_freebayes
+  printf "Executing Freebayes\n" | tee -a $LOG >&3
+  run_freebayes
+fi
 
 printf "\n\n---\nSTEP 3 - Call home!\n---\n" | tee -a $LOG >&3
-if [ "$CALL_HOME" = true ]; then
+if [ "$CALL_HOME" == true ]; then
+  call_home
   printf "Results were successfully sent to EMBL-EBI!"
 else
   printf "\n\n---\nCall home is disabled for this run. Keeping data local.\n---\n" | tee -a $LOG >&3
